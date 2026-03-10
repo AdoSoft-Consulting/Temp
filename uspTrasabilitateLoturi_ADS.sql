@@ -102,9 +102,6 @@ begin
 			) c on a.DocumentId=c.DocumentId and a.SiteId=c.SiteId
 		where a.KgQtty<>0
 			and a.LotNumberWMS<>c.LotNumberWMS
-			--and a.TransactionTypeId in (
-			--				749, /*Raport Compunere WMS*/
-			--				753  /*Raport Descompunere WMS*/)
 		group by a.DocumentId, a.SiteId, a.ItemId, a.LotNumberWMS, c.LotNumberWMS, a.Info
 
 		insert into #Manufacturing
@@ -126,7 +123,7 @@ begin
 		ResultQtty	float       not null,
 		Operation	varchar(50) not null)
 
-	-- 1.1) NIR (loturi inițiale)
+	-- 1.1) NIR (loturi initiale)
 	insert into #Flux 
 		(SourceLot, ResultLot, SourceQtty, ResultQtty, Operation)
 	select SourceLot=convert(nvarchar(36), i.SourceLotNumber),
@@ -145,7 +142,7 @@ begin
 		ResultQtty=convert(float, m.Qtty),
 		Operation='Compunere'
 	from #Manufacturing m
-	where lower(m.Info) like '%compunere%'
+	where lower(m.Info) like '% compunere%'
 
 	-- 1.3) Descompunere
 	insert into #Flux 
@@ -180,7 +177,7 @@ begin
 		ResultQtty	float       not null,
 		EdgeFactor	float       not null)
 
-	-- 2.1) NIR: relație identitate Lot → Lot, factor 1
+	-- 2.1) NIR: relatie identitate Lot → Lot, factor 1
 	insert into #EdgesNet 
 		(SourceLot, ResultLot, SourceQtty, ResultQtty, EdgeFactor)
 	select SourceLot,
@@ -225,7 +222,7 @@ begin
 	where SourceQtty>0
 		and ResultQtty>0
 
-	-- 3) TRASABILITATE COMPLETĂ: #ReverseGraph
+	-- 3) TRASABILITATE COMPLETa: #ReverseGraph
 
 	if object_id('tempdb..#ReverseGraph') is not null drop table #ReverseGraph;
 
@@ -235,13 +232,10 @@ begin
 			FinalLot            =e.ResultLot,
 			Depth               =1,
 			ProportionPer1Final =convert(float, e.EdgeFactor),
-			Path                =convert(varchar(max),
-			                               convert(varchar(36), e.ResultLot)
-			                               + '|' +
-			                               convert(varchar(36), e.SourceLot))
+			Path                =convert(varchar(max),convert(varchar(36), e.ResultLot)+ '|' +convert(varchar(36), e.SourceLot))
 		from #EdgesNet e
 		union all
-		-- nivele următoare: urcăm spre loturi mai vechi
+		-- nivele urmatoare: urcam spre loturi mai vechi
 		select InitialLot       =e.SourceLot,
 			FinalLot            =t.FinalLot,
 			Depth               =t.Depth + 1,
@@ -251,9 +245,10 @@ begin
 		join #EdgesNet e on e.ResultLot=t.InitialLot
 		where t.Depth < 50
 			and t.Path not like '%' + convert(varchar(36), e.SourceLot) + '%')
+
 	select FinalLot,
 		InitialLot,
-		Depth              =min(Depth),
+		Depth=min(Depth),
 		ProportionPer1Final=sum(ProportionPer1Final)
 	into #ReverseGraph
 	from xTrace
@@ -261,24 +256,6 @@ begin
 
 	create clustered index IX_ReverseGraph_FinalLot_Initial
 		on #ReverseGraph (FinalLot, InitialLot);
-
-	-- 4) POPULARE TABELE STATICE
-
-	-- 4.1) LotEdgesNet_ADS
-	truncate table LotEdgesNet_ADS;
-
-	insert into LotEdgesNet_ADS
-		(SourceLot, ResultLot, SourceQtty, ResultQtty, EdgeFactor)
-	select SourceLot, ResultLot, SourceQtty, ResultQtty, EdgeFactor
-	from #EdgesNet
-
-	-- 4.2) LotReverseGraph_ADS
-	truncate table LotReverseGraph_ADS;
-
-	insert into LotReverseGraph_ADS
-		(FinalLot, InitialLot, Depth, ProportionPer1Final)
-	select FinalLot, InitialLot, Depth, ProportionPer1Final
-	from #ReverseGraph;
 
 	-- 4) Calcule pentru LotBalance_ADS
 	truncate table LotBalance_ADS;
@@ -293,16 +270,16 @@ begin
 		select distinct Lot=i.LotNumber
 		from #Initial i),
 	xProd as (
-		-- producție din NIR (prioritar)
+		-- productie din NIR (prioritar)
 		select Lot=i.LotNumber,
 			ProducedQtty=sum(i.Qtty)
 		from #Initial i
 		group by i.LotNumber
 		union all
-		-- producție din Manufacturing doar dacă lotul nu e în NIR
+		-- productie din Manufacturing doar daca lotul nu e in NIR
 		select Lot=m.LotNumber,
-			ProducedQtty=sum(case when lower(m.Info) like '%raport compunere wms%'
-										or lower(m.Info) like '%raport transformare wms%'
+			ProducedQtty=sum(case when lower(m.Info) like '% compunere %'
+										or lower(m.Info) like '%transformare%'
 								then m.Qtty
 								else 0
 							end)
@@ -314,9 +291,9 @@ begin
 		group by m.LotNumber),
 	xCons as (
 		select Lot=m.SourceLotNumber,
-			ConsumedQtty=sum(case when lower(m.Info) like '%raport compunere wms%' then m.SourceQtty
-								when lower(m.Info) like '%raport transformare wms%' then m.SourceQtty
-								when lower(m.Info) like '%raport descompunere wms%' then m.SourceQtty
+			ConsumedQtty=sum(case when lower(m.Info) like '% compunere%' then m.SourceQtty
+								when lower(m.Info) like '%transformare%' then m.SourceQtty
+								when lower(m.Info) like '%descompunere%' then m.SourceQtty
 								else 0
 							end)
 		from #Manufacturing m
@@ -333,7 +310,7 @@ begin
 	left join xProd P on P.Lot=L.Lot
 	left join xCons C on C.Lot=L.Lot;
 
-	-- 5) Calcule pentru LotUsage_ADS (TRASABILITATE REALĂ)
+	-- 5) Calcule pentru LotUsage_ADS (TRASABILITATE REALa)
 	truncate table LotUsage_ADS;
 
 	-- 5.1) Loturi finale vandabile
@@ -342,15 +319,19 @@ begin
 		from LotBalance_ADS (nolock)
 		where RemainingQtty>0),
 
-	-- 5.2) Muchii de producție (RAPORT COMPUNERE WMS)
+	-- 5.2) Muchii de productie (RAPORT COMPUNERE WMS)
 	xProdEdges as (
-		select InitialLot         =m.SourceLotNumber,
-			FinalLot              =m.LotNumber,
-			ProducedQtty          =convert(float, m.Qtty),
-			InitialConsumedQtyReal=convert(float, m.SourceQtty),
-			FactorTech            =convert(float, m.SourceQtty) / nullif(convert(float, m.Qtty), 0)
+		select
+			InitialLot =rg.InitialLot,
+			FinalLot   =m.LotNumber,
+			ProducedQtty=sum(convert(float, m.Qtty)),
+			InitialConsumedQtyReal=sum(convert(float, m.SourceQtty)),
+			FactorTech=sum(convert(float, m.SourceQtty))/nullif(sum(convert(float, m.Qtty)),0)
 		from #Manufacturing m
-		where lower(m.Info) like '%raport compunere wms%'),
+		join #ReverseGraph rg on rg.FinalLot = m.SourceLotNumber
+		where lower(m.Info) like '% compunere%'
+		and rg.Depth >= 1
+		group by rg.InitialLot, m.LotNumber),
 	xDirectProd as (
 		select p.FinalLot,
 			p.InitialLot,
@@ -361,12 +342,12 @@ begin
 		from xProdEdges p
 		join xFinalLots f on f.Lot=p.FinalLot),
 
-	-- 5.3) Transformări (alias între loturi)
+	-- 5.3) Transformari (alias intre loturi)
 	xTransformMap as (
 		select FromLot	=m.SourceLotNumber,
 			ToLot		=m.LotNumber
 		from #Manufacturing m
-		where lower(m.Info) like '%raport transformare wms%'),
+		where lower(m.Info) like '%transformare%'),
 	xAliasChain as (
 		select Lot=Lot,
 			RootLot=Lot,
@@ -380,14 +361,14 @@ begin
 		join xTransformMap t on t.ToLot=a.Lot
 		where a.Depth < 5),
 	xFinalMapped as (
-		-- lot cu producție directă
+		-- lot cu productie directa
 		select distinct FinalLot=f.Lot,
 			RootFinalLot=f.Lot
 		from xFinalLots f
 		where exists (
 			select 1 from xDirectProd d where d.FinalLot=f.Lot)
 		union
-		-- lot fără compunere directă → ia producătorul prin transformare
+		-- lot fara compunere directa → ia producatorul prin transformare
 		select distinct FinalLot=f.Lot,
 			RootFinalLot=a.RootLot
 		from xFinalLots f
@@ -422,10 +403,10 @@ begin
 	select FinalLot,
 		InitialLot,
 		Depth,
-		InitialConsumedQty   =round(InitialConsumedQty,    6),
-		FinalObtainedQty     =round(ProducedQtty,         6),
-		ProportionPer1Final  =round(ProportionPer1Final,  6),
-		PctOfFinalLot        =round(PctOfFinalLot,        6)
+		InitialConsumedQty   =round(InitialConsumedQty,6),
+		FinalObtainedQty     =round(ProducedQtty,6),
+		ProportionPer1Final  =round(ProportionPer1Final,6),
+		PctOfFinalLot        =round(PctOfFinalLot,6)
 	from xCalc;
 
 	-- 5.4) Loturi rezultate doar din TRANSFORMARE
@@ -434,13 +415,13 @@ begin
 			ParentLot=m.SourceLotNumber
 		from #Manufacturing m
 		join LotBalance_ADS lb (nolock) on lb.Lot=m.LotNumber
-		where lower(m.Info) like '%raport transformare wms%'
+		where lower(m.Info) like '%transformare%'
 		  and lb.RemainingQtty>0
 		  and not exists (
 				select 1
 				from #Manufacturing c
 				where c.LotNumber=m.LotNumber
-				  and lower(c.Info) like '%raport compunere wms%')),
+				  and lower(c.Info) like '% compunere%')),
 	xScale as (
 		select t.FinalLot,
 			t.ParentLot,
@@ -462,16 +443,16 @@ begin
 		join LotUsage_ADS u (nolock) on u.FinalLot=s.ParentLot)
 	insert into LotUsage_ADS 
 		(FinalLot, InitialLot, Depth, InitialConsumedQty, FinalObtainedQty, ProportionPer1Final, PctOfFinalLot)
-	select FinalLot           =p.FinalLot,
+	select FinalLot        =p.FinalLot,
 		InitialLot         =p.InitialLot,
 		Depth              =p.Depth + 1,
-		InitialConsumedQty =round(p.InitialConsumedQty * p.Alpha,   6),
-		FinalObtainedQty   =round(p.FinalObtainedQty   * p.Alpha,   6),
-		ProportionPer1Final=round(p.ProportionPer1Final,           6),
-		PctOfFinalLot      =round(p.PctOfFinalLot,                 6)
+		InitialConsumedQty =round(p.InitialConsumedQty*p.Alpha,6),
+		FinalObtainedQty   =round(p.FinalObtainedQty*p.Alpha,6),
+		ProportionPer1Final=round(p.ProportionPer1Final,6),
+		PctOfFinalLot      =round(p.PctOfFinalLot,6)
 	from xParentUsage p;
 
-	-- 5.5) Completăm LotUsage_ADS cu loturile fără traseu (NIR, consumate etc.)
+	-- 5.5) Completam LotUsage_ADS cu loturile fara traseu (NIR, consumate etc.)
 	;with xMissingLots as (
 		select FinalLot        =b.Lot,
 			InitialLot         =b.Lot,
@@ -487,21 +468,23 @@ begin
 			where u.FinalLot=b.Lot))
 
 	insert into LotUsage_ADS 
-		(FinalLot,
-		InitialLot,
-		Depth,
-		InitialConsumedQty,
-		FinalObtainedQty,
-		ProportionPer1Final,
-		PctOfFinalLot)
-	select FinalLot,
-		InitialLot,
-		Depth,
-		InitialConsumedQty =round(InitialConsumedQty,  6),
-		FinalObtainedQty   =round(FinalObtainedQty,    6),
-		ProportionPer1Final=round(ProportionPer1Final, 6),
-		PctOfFinalLot      =round(PctOfFinalLot,       6)
+		(FinalLot, InitialLot, Depth, InitialConsumedQty,
+		FinalObtainedQty, ProportionPer1Final, PctOfFinalLot)
+	select FinalLot, InitialLot, Depth, round(InitialConsumedQty,6), 
+		round(FinalObtainedQty,6), round(ProportionPer1Final,6), round(PctOfFinalLot,6)
 	from xMissingLots
+
+select *
+from #ReverseGraph
+where FinalLot = '4BED0DDD-1725-4255-8EF5-4E0500B26F91'
+order by InitialLot, Depth
+
+select *
+from #ReverseGraph
+where InitialLot = '58DD2A97-CC5B-4E55-B62A-8A99D0709683'
+order by FinalLot, Depth
 
 	drop table if exists #Initial, #MnfgInput, #MnfgOutput, #Manufacturing, #Flux, #EdgesNet, #ReverseGraph
 end
+go
+
